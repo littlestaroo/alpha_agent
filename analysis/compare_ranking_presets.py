@@ -64,7 +64,7 @@ def main() -> None:
     parser.add_argument(
         "--presets",
         nargs="+",
-        default=["direct", "state", "event"],
+        default=["direct", "state", "event", "optimized"],
         help="要比较的模型 preset 列表",
     )
     args = parser.parse_args()

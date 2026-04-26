@@ -232,3 +232,73 @@ python -m news_quant \
 5. 趋势分析：观察股票舆情画像与因子的时间变化
 
 后面你再做第四章智能体时，可以把这套 baseline 作为“无智能体、直接 LLM API”的比较对象。
+
+## 7. 排序模型与 top k 选股
+
+项目当前已经在第三章 baseline 基础上实现了横截面排序模型，可将股票日频因子进一步映射为每日 `top k` 股票。
+
+核心模块：
+
+- `news_quant/ranking.py`
+- `analysis/build_stock_rankings.py`
+- `analysis/compare_ranking_presets.py`
+
+支持的 preset 包括：
+
+- `direct`：只使用当天直接型因子
+- `state`：加入时序状态因子
+- `event`：加入事件状态因子
+- `optimized`：加入可靠性优化后的增强排序模型
+
+示例：
+
+```bash
+.venv_news/bin/python analysis/build_stock_rankings.py \
+  --in output/q4_20stocks_batches/chapter3_baseline_q4_20stocks_batches_000_004_diverse_top3_daily_profiles_global.csv \
+  --out /tmp/chapter3_ranked.csv \
+  --topk-out /tmp/chapter3_top5.csv \
+  --summary-out /tmp/chapter3_rank_summary.json \
+  --top-k 5 \
+  --preset optimized
+```
+
+## 8. 第四章多智能体工作流
+
+项目已经实现第四章对应的多智能体工作流，将第三章方法组织为：
+
+`数据输入 agent -> 舆情分析 agent -> 因子构建 agent -> 排序选股 agent -> 评估报告 agent`
+
+核心模块：
+
+- `news_quant/agent_pipeline.py`
+- `analysis/run_agent_pipeline.py`
+
+示例：
+
+```bash
+MOCK_LLM=1 .venv_news/bin/python analysis/run_agent_pipeline.py \
+  --news data/prepared/opennewsarchive_thesis_2stocks_2023-11_daily1_perstock.jsonl \
+  --universe data/stock_universe_thesis_2stocks.csv \
+  --out-dir /tmp/chapter4_agent_demo \
+  --ranking-preset optimized \
+  --top-k 1 \
+  --price-cache data/market/chapter3_2stocks_prices_20231020_20231231.csv
+```
+
+输出包括：
+
+- 文章级结构化结果
+- 股票级日频因子
+- 排序结果与 top k 股票
+- 收益评估结果
+- Markdown 系统运行报告
+
+## 9. 论文文档入口
+
+当前仓库中可直接用于论文写作的核心文档包括：
+
+- `chapter3_proposed_factor_ranking_model.md`
+- `chapter3_methodology_argument.md`
+- `chapter3_ranking_validation_report.md`
+- `chapter4_agent_design_and_implementation.md`
+- `thesis_writing_blueprint.md`

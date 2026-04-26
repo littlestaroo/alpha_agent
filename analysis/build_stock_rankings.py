@@ -56,9 +56,9 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=5, help="每天选出前 k 只股票")
     parser.add_argument(
         "--preset",
-        choices=["direct", "state", "event", "all"],
+        choices=["direct", "state", "event", "all", "optimized"],
         default="all",
-        help="排序模型预设：direct=直接因子，state=加入时序状态，event/all=加入事件状态",
+        help="排序模型预设：direct=直接因子，state=加入时序状态，event/all=加入事件状态，optimized=加入可靠性优化",
     )
     parser.add_argument(
         "--factor-config",

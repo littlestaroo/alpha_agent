@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import json
+import math
 
 import pandas as pd
 
@@ -43,6 +44,25 @@ DEFAULT_FACTOR_SPECS = [
     FactorSpec("risk_event_state", "风险事件状态", "event", 0.08, -1),
 ]
 
+OPTIMIZED_FACTOR_SPECS = [
+    FactorSpec("net_sentiment_factor", "当日净情绪", "direct", 0.06, 1),
+    FactorSpec("negative_shock_factor", "当日负面冲击", "direct", 0.06, -1),
+    FactorSpec("attention_factor", "当日关注度", "direct", 0.06, 1),
+    FactorSpec("composite_score", "基础综合分", "direct", 0.06, 1),
+    FactorSpec("event_novelty_factor", "事件新颖性", "direct", 0.05, 1),
+    FactorSpec("ema5_sentiment_state", "5日情绪状态", "state", 0.10, 1),
+    FactorSpec("negative_shock_carry", "负面冲击记忆", "state", 0.08, -1),
+    FactorSpec("state_composite_factor", "状态综合分", "state", 0.10, 1),
+    FactorSpec("sentiment_confirmation_factor", "情绪确认因子", "state", 0.12, 1),
+    FactorSpec("coverage_reliability_factor", "覆盖可靠性因子", "reliability", 0.09, 1),
+    FactorSpec("sentiment_dispersion_factor", "情绪分歧因子", "reliability", 0.08, -1),
+    FactorSpec("earnings_event_state", "业绩事件状态", "event", 0.04, 1),
+    FactorSpec("operations_event_state", "经营事件状态", "event", 0.12, 1),
+    FactorSpec("market_buzz_event_state", "市场舆情事件状态", "event", 0.04, 1),
+    FactorSpec("risk_event_state", "风险事件状态", "event", 0.10, -1),
+    FactorSpec("event_density_factor", "事件密度因子", "event", 0.04, 1),
+]
+
 PRESET_FACTOR_NAMES = {
     "direct": {
         "net_sentiment_factor",
@@ -61,6 +81,7 @@ PRESET_FACTOR_NAMES = {
     },
     "event": {spec.name for spec in DEFAULT_FACTOR_SPECS},
     "all": {spec.name for spec in DEFAULT_FACTOR_SPECS},
+    "optimized": {spec.name for spec in OPTIMIZED_FACTOR_SPECS},
 }
 
 
@@ -73,7 +94,8 @@ def load_factor_specs(path: Path | None = None, preset: str = "all") -> list[Fac
     names = PRESET_FACTOR_NAMES.get(preset)
     if names is None:
         raise ValueError(f"未知排序模型 preset: {preset}")
-    return [spec for spec in DEFAULT_FACTOR_SPECS if spec.name in names]
+    source_specs = OPTIMIZED_FACTOR_SPECS if preset == "optimized" else DEFAULT_FACTOR_SPECS
+    return [spec for spec in source_specs if spec.name in names]
 
 
 def cross_sectional_percentile(values: pd.Series) -> pd.Series:
@@ -91,8 +113,81 @@ def _available_specs(df: pd.DataFrame, factor_specs: list[FactorSpec]) -> list[F
     return [spec for spec in factor_specs if spec.name in df.columns]
 
 
-def build_factor_signals(df: pd.DataFrame, factor_specs: list[FactorSpec]) -> pd.DataFrame:
+def _clamp_series(values: pd.Series, lower: float, upper: float) -> pd.Series:
+    return values.clip(lower=lower, upper=upper)
+
+
+def add_derived_ranking_features(df: pd.DataFrame) -> pd.DataFrame:
     ranked = df.copy()
+
+    if {"net_sentiment_factor", "ema5_sentiment_state"}.issubset(ranked.columns):
+        net_sent = pd.to_numeric(ranked["net_sentiment_factor"], errors="coerce").fillna(0.0)
+        state_sent = pd.to_numeric(ranked["ema5_sentiment_state"], errors="coerce").fillna(0.0)
+        ranked["sentiment_confirmation_factor"] = (
+            0.5 * (net_sent + state_sent) - 0.5 * (net_sent - state_sent).abs()
+        )
+        ranked["sentiment_confirmation_factor"] = _clamp_series(
+            ranked["sentiment_confirmation_factor"], -1.0, 1.0
+        )
+
+    if {"article_count", "mention_count", "attention_factor", "sentiment_dispersion_factor"}.issubset(
+        ranked.columns
+    ):
+        article_norm = _clamp_series(pd.to_numeric(ranked["article_count"], errors="coerce").fillna(0.0) / 3.0, 0.0, 1.0)
+        mention_norm = _clamp_series(pd.to_numeric(ranked["mention_count"], errors="coerce").fillna(0.0) / 3.0, 0.0, 1.0)
+        attention_norm = _clamp_series(
+            pd.to_numeric(ranked["attention_factor"], errors="coerce").fillna(0.0) / 0.65,
+            0.0,
+            1.0,
+        )
+        consistency_norm = 1.0 - _clamp_series(
+            pd.to_numeric(ranked["sentiment_dispersion_factor"], errors="coerce").fillna(0.0) / 0.8,
+            0.0,
+            1.0,
+        )
+        ranked["coverage_reliability_factor"] = (
+            0.30 * article_norm
+            + 0.20 * mention_norm
+            + 0.20 * attention_norm
+            + 0.30 * consistency_norm
+        )
+        ranked["coverage_reliability_factor"] = _clamp_series(
+            ranked["coverage_reliability_factor"], 0.0, 1.0
+        )
+
+    return ranked
+
+
+def build_reliability_multiplier(df: pd.DataFrame) -> pd.Series:
+    if "coverage_reliability_factor" in df.columns:
+        coverage = pd.to_numeric(df["coverage_reliability_factor"], errors="coerce").fillna(0.5)
+    else:
+        coverage = pd.Series(0.5, index=df.index, dtype=float)
+
+    if "sentiment_dispersion_factor" in df.columns:
+        consistency = 1.0 - _clamp_series(
+            pd.to_numeric(df["sentiment_dispersion_factor"], errors="coerce").fillna(0.0) / 0.8,
+            0.0,
+            1.0,
+        )
+    else:
+        consistency = pd.Series(0.5, index=df.index, dtype=float)
+
+    if "event_novelty_factor" in df.columns:
+        novelty = _clamp_series(
+            pd.to_numeric(df["event_novelty_factor"], errors="coerce").fillna(0.0).abs() / 0.9,
+            0.0,
+            1.0,
+        )
+    else:
+        novelty = pd.Series(0.5, index=df.index, dtype=float)
+
+    multiplier = 0.70 + 0.20 * coverage + 0.10 * (0.6 * consistency + 0.4 * novelty)
+    return _clamp_series(multiplier, 0.70, 1.00)
+
+
+def build_factor_signals(df: pd.DataFrame, factor_specs: list[FactorSpec]) -> pd.DataFrame:
+    ranked = add_derived_ranking_features(df)
     if "publish_date" not in ranked.columns:
         raise ValueError("输入因子表必须包含 publish_date 列")
     ranked["publish_date"] = pd.to_datetime(ranked["publish_date"])
@@ -151,7 +246,10 @@ def build_rankings(
     groups = list(dict.fromkeys(spec.group for spec in specs))
     for group_name in groups:
         ranked[f"{group_name}_group_score"] = weighted_group_score(ranked, group_name, specs)
-    ranked["ranking_score"] = overall_ranking_score(ranked, specs)
+    ranked["base_ranking_score"] = overall_ranking_score(ranked, specs)
+    reliability_multiplier = build_reliability_multiplier(ranked)
+    ranked["reliability_multiplier"] = reliability_multiplier
+    ranked["ranking_score"] = 0.5 + (ranked["base_ranking_score"] - 0.5) * reliability_multiplier
     sort_cols = ["publish_date", "ranking_score"]
     ascending = [True, False]
     if "ts_code" in ranked.columns:
