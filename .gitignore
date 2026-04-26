@@ -1,0 +1,20 @@
+.DS_Store
+.env
+.venv/
+.venv_*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Large local datasets
+data/raw/
+data/prepared/
+
+# Keep lightweight project inputs
+!data/
+!data/*.csv
+!data/market/
+!data/market/*.csv
+
+# Generated experiment outputs
+output/
